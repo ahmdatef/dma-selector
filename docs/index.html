@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: sans-serif; }
+
+    #container { position: relative; width: 100%; height: 100vh; }
+    #map { width: 100%; height: 100%; }
+
+    #tooltip {
+      position: absolute;
+      top: 10px;
+      left: 50px;
+      background: rgba(255,255,255,0.95);
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      color: #1e293b;
+      pointer-events: none;
+      display: none;
+      z-index: 1000;
+      max-width: 220px;
+    }
+
+    #controls {
+      position: absolute;
+      bottom: 30px;
+      left: 10px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      z-index: 1000;
+    }
+
+    #selection-count {
+      background: rgba(255,255,255,0.95);
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      color: #1e293b;
+    }
+
+    .ctrl-btn {
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      display: none;
+    }
+
+    #clear-btn { background: #ef4444; }
+    #clear-btn:hover { background: #dc2626; }
+
+    #invert-btn { background: #64748b; }
+    #invert-btn:hover { background: #475569; }
+
+    #select-all-btn { background: #0ea5e9; }
+    #select-all-btn:hover { background: #0284c7; }
+
+    #group-panel {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(255,255,255,0.95);
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #1e293b;
+      z-index: 1000;
+      min-width: 160px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      display: none;
+    }
+
+    #group-panel h4 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #64748b;
+      margin-bottom: 8px;
+    }
+
+    .group-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 6px;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    .group-row:hover { background: #f1f5f9; }
+
+    .group-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
+    #status {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #64748b;
+      font-size: 14px;
+      z-index: 1000;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="map"></div>
+    <div id="tooltip"></div>
+    <div id="group-panel">
+      <h4>Groups</h4>
+      <div id="group-list"></div>
+    </div>
+    <div id="controls">
+      <div id="selection-count">0 DMAs selected</div>
+      <button id="clear-btn" class="ctrl-btn" onclick="clearSelection()">Clear</button>
+      <button id="invert-btn" class="ctrl-btn" onclick="invertSelection()">Invert</button>
+      <button id="select-all-btn" class="ctrl-btn" onclick="selectAll()">Select All</button>
+    </div>
+    <div id="status">Loading map...</div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    var selectedDMAs  = [];
+    var layerByDMA    = {};
+    var groups        = {};
+    var dmaToGroup    = {};
+    var groupColorMap = {};
+
+    var GROUP_COLORS = [
+      '#f97316',
+      '#22c55e',
+      '#a855f7',
+      '#ec4899',
+      '#eab308',
+      '#14b8a6',
+      '#ef4444',
+      '#6366f1'
+    ];
+
+    var STYLE_DEFAULT  = { color: '#64748b', weight: 0.6, fillColor: '#94a3b8', fillOpacity: 0.15 };
+    var STYLE_HOVER    = { fillColor: '#1d4ed8', fillOpacity: 0.25 };
+    var STYLE_SELECTED = { fillColor: '#3b82f6', fillOpacity: 0.45 };
+
+    // Parse group-* query params
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      var colorIndex = 0;
+      params.forEach(function (value, key) {
+        if (key.indexOf('group-') !== 0) return;
+        var groupName = key.slice(6);
+        var ids = value.split(',')
+          .map(function (s) { return parseInt(s.trim(), 10); })
+          .filter(function (n) { return !isNaN(n); });
+        groups[groupName] = ids;
+        groupColorMap[groupName] = GROUP_COLORS[colorIndex % GROUP_COLORS.length];
+        colorIndex++;
+        ids.forEach(function (id) {
+          if (!dmaToGroup[id]) dmaToGroup[id] = groupName;
+        });
+      });
+    })();
+
+    // Build group panel if groups were provided
+    (function () {
+      var groupNames = Object.keys(groups);
+      if (groupNames.length === 0) return;
+      var panel = document.getElementById('group-panel');
+      var list  = document.getElementById('group-list');
+      panel.style.display = 'block';
+      groupNames.forEach(function (name) {
+        var row = document.createElement('div');
+        row.className = 'group-row';
+        row.innerHTML =
+          '<div class="group-swatch" style="background:' + groupColorMap[name] + '"></div>' +
+          '<span>' + name + '</span>';
+        row.addEventListener('click', function () { selectGroup(name); });
+        list.appendChild(row);
+      });
+    })();
+
+    var map = L.map('map', { zoomControl: true }).setView([39.5, -98.5], 4);
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 19
+    }).addTo(map);
+
+    function isSelected(id) { return selectedDMAs.indexOf(id) !== -1; }
+
+    function getStyle(id) {
+      if (isSelected(id)) return Object.assign({}, STYLE_DEFAULT, STYLE_SELECTED);
+      var groupName = dmaToGroup[id];
+      if (groupName) return Object.assign({}, STYLE_DEFAULT, { fillColor: groupColorMap[groupName], fillOpacity: 0.35 });
+      return STYLE_DEFAULT;
+    }
+
+    function refreshAllStyles() {
+      Object.keys(layerByDMA).forEach(function (id) {
+        layerByDMA[id].setStyle(getStyle(Number(id)));
+      });
+    }
+
+    function updateCountBadge() {
+      var n = selectedDMAs.length;
+      document.getElementById('selection-count').textContent =
+        n + ' DMA' + (n !== 1 ? 's' : '') + ' selected';
+      document.getElementById('clear-btn').style.display = n > 0 ? 'block' : 'none';
+    }
+
+    function postUpdate() {
+      parent.postMessage({
+        type: 'dmaSelectorUpdate',
+        selectedDMAs: selectedDMAs,
+        lastClickedDMA: selectedDMAs.length > 0 ? selectedDMAs[selectedDMAs.length - 1] : null
+      }, '*');
+    }
+
+    function clearSelection() {
+      selectedDMAs = [];
+      refreshAllStyles();
+      updateCountBadge();
+      postUpdate();
+    }
+
+    function invertSelection() {
+      var allIds = Object.keys(layerByDMA).map(Number);
+      selectedDMAs = allIds.filter(function (id) {
+        return selectedDMAs.indexOf(id) === -1;
+      });
+      refreshAllStyles();
+      updateCountBadge();
+      postUpdate();
+    }
+
+    function selectAll() {
+      selectedDMAs = Object.keys(layerByDMA).map(Number);
+      refreshAllStyles();
+      updateCountBadge();
+      postUpdate();
+    }
+
+    function selectGroup(groupName) {
+      selectedDMAs = groups[groupName].slice();
+      refreshAllStyles();
+      updateCountBadge();
+      postUpdate();
+    }
+
+    window.clearSelection = clearSelection;
+
+    var tooltip = document.getElementById('tooltip');
+
+    function onEachFeature(feature, layer) {
+      var dmaId = feature.properties.dma;
+      layerByDMA[dmaId] = layer;
+
+      layer.on({
+        click: function () {
+          var idx = selectedDMAs.indexOf(dmaId);
+          if (idx !== -1) {
+            selectedDMAs.splice(idx, 1);
+          } else {
+            selectedDMAs.push(dmaId);
+          }
+          layer.setStyle(getStyle(dmaId));
+          updateCountBadge();
+          postUpdate();
+        },
+        mouseover: function () {
+          if (!isSelected(dmaId)) layer.setStyle(STYLE_HOVER);
+          tooltip.style.display = 'block';
+          tooltip.innerHTML =
+            '<strong>' + feature.properties.name + '</strong>' +
+            '<br>DMA ' + dmaId +
+            (feature.properties.tvperc != null
+              ? '<br>TV: ' + feature.properties.tvperc + '%' : '');
+        },
+        mouseout: function () {
+          layer.setStyle(getStyle(dmaId));
+          tooltip.style.display = 'none';
+        }
+      });
+    }
+
+    fetch('./nielsen-dmas.geojson')
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function (geojson) {
+        document.getElementById('status').style.display = 'none';
+        document.getElementById('invert-btn').style.display = 'block';
+        document.getElementById('select-all-btn').style.display = 'block';
+        L.geoJSON(geojson, {
+          style: function (feature) { return getStyle(feature.properties.dma); },
+          onEachFeature: onEachFeature
+        }).addTo(map);
+      })
+      .catch(function (err) {
+        document.getElementById('status').textContent = 'Failed to load DMA data: ' + err.message;
+        console.error('DMA load error:', err);
+      });
+  </script>
+</body>
+</html>
