@@ -243,7 +243,7 @@
     }
 
     function postUpdate() {
-      parent.postMessage({
+      window.top.postMessage({
         type: 'dmaSelectorUpdate',
         selectedDMAs: selectedDMAs,
         lastClickedDMA: selectedDMAs.length > 0 ? selectedDMAs[selectedDMAs.length - 1] : null
